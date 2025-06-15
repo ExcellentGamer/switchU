@@ -46,8 +46,8 @@ static bool right_scrolling = false;
 static bool up_scrolling = false;
 static bool down_scrolling = false;
 static bool game_launched = false;
-bool quit = false;
 bool menuOpen = false;
+int battery_level = 0.0;
 
 int seperation_space = 264;
 int target_camera_offset_x = 0;
@@ -114,15 +114,8 @@ SDL_Texture* load_texture(const char* path, SDL_Renderer* renderer) {
     return texture;
 }
 
-inline bool RunningFromMiiMaker() {
-    return (OSGetTitleID() & 0xFFFFFFFFFFFFF0FFull) == 0x000500101004A000ull;
-}
-
 void launch_title_if_exists(uint64_t titleID) {
-    if (RunningFromMiiMaker()) {
-        printf("Cannot launch system titles from Mii Maker environment.\n");
-        quit = true;
-    } else if (SYSCheckTitleExists(titleID)) {
+    if (SYSCheckTitleExists(titleID)) {
         SYSLaunchTitle(titleID);
     } else {
         printf("Title not found.\n");
@@ -275,10 +268,11 @@ void shutdown() {
 
     RPXLoader_DeInitLibrary();
 
+    AXQuit();
+
     SDL_DestroyWindow(main_window);
     SDL_DestroyRenderer(main_renderer);
     SDL_Quit();
-    AXQuit();
 }
 
 void input(Input &input) {
@@ -399,15 +393,20 @@ void input(Input &input) {
                 }
             }
         } else {
-            if (cur_selected_tile == 1) {
+            if (cur_selected_tile == 0) {
+                printf("Launching MiiVerse !\n");
+                _SYSSwitchTo(SysAppPFID::SYSAPP_PFID_MIIVERSE);
+            } else if (cur_selected_tile == 1) {
                 const char* launch_path = "wiiu/apps/appstore/appstore.wuhb";
 
                 RPXLoaderStatus st = RPXLoader_LaunchHomebrew(launch_path);
                 printf("Launch status: %s\n", RPXLoader_GetStatusStr(st));
             } else if (cur_selected_tile == 3) {
-                uint64_t title_id = 0x000500301001210AULL;
-                printf("Title check: %s\n", SYSCheckTitleExists(title_id) ? "found" : "not found");
-                launch_title_if_exists(title_id);
+                printf("Launching the Browser !\n");
+                SYSSwitchToBrowser(nullptr);
+            } else if (cur_selected_tile == 5) {
+                printf("Launching Download Manager !\n");
+                _SYSSwitchTo(SysAppPFID::SYSAPP_PFID_DOWNLOAD_MANAGEMENT);
             } else if (cur_selected_tile == 6) {
                 cur_menu = MENU_SETTINGS;
             }
@@ -451,10 +450,6 @@ void input(Input &input) {
         if (target_camera_offset_x < 0) target_camera_offset_x = 0;
         int max_camera_offset = seperation_space * 24 - WINDOW_WIDTH;
         if (target_camera_offset_x > max_camera_offset) target_camera_offset_x = max_camera_offset;
-    }
-
-    if (event.type == SDL_QUIT) {
-        quit = true;
     }
 }
 
@@ -611,7 +606,7 @@ void update() {
         std::string title = std::string(ACCOUNT_ID) + "'s Page";
         // render title
     } else {
-        char batteryStr[32];
+        std::string battery = std::to_string(battery_level) + "%";
         // render the battery life
     }
 
@@ -673,18 +668,9 @@ int main(int argc, char const *argv[]) {
             }
         }
         baseInput.process();
+        battery_level = vpadInput.data.battery / 255 * 100;
 
         input(baseInput);
-
-        if (quit) {
-           if (RunningFromMiiMaker()) {
-                // Legacy way, just quit
-                break;
-            } else {
-                // Launch menu otherwise
-                SYSLaunchMenu();
-            }
-        }
 
         update();
     }

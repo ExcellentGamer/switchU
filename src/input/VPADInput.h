@@ -23,7 +23,7 @@ class VPadInput : public Input {
 public:
     //!Constructor
     VPadInput() {
-        memset(&vpad, 0, sizeof(vpad));
+        memset(&vpad, 0, sizeof(vpad));     
     }
 
     //!Destructor
@@ -41,6 +41,8 @@ public:
             data.buttons_d    = vpad.trigger;
             data.validPointer = !vpad.tpNormal.validity;
             data.touched      = vpad.tpNormal.touched;
+            data.battery      = vpad.battery;
+            headphones        = vpad.usingHeadphones ? 1 : 0;
 
             VPADGetTPCalibratedPoint(VPAD_CHAN_0, &tpCalib, &vpad.tpFiltered1);
 
@@ -55,7 +57,10 @@ public:
         return false;
     }
 
+    bool headphones;
+
 private:
     VPADStatus vpad{};
     VPADTouchData tpCalib{};
+    PadData lastData{};
 };

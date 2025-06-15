@@ -133,6 +133,7 @@ public:
         }
 
         KPADRead(channel, &kpad, 1);
+        WPADGetInfo(channel, &wpadInfo);
 
         if (kpad.extensionType == WPAD_EXT_CORE || kpad.extensionType == WPAD_EXT_NUNCHUK) {
             data.buttons_r = remapWiiMoteButtons(kpad.release);
@@ -143,6 +144,8 @@ public:
             data.buttons_h = remapClassicButtons(kpad.classic.hold);
             data.buttons_d = remapClassicButtons(kpad.classic.trigger);
         }
+
+        data.battery = wpadInfo.batteryLevel;
 
         data.validPointer = (kpad.posValid == 1 || kpad.posValid == 2) &&
                             (kpad.pos.x >= -1.0f && kpad.pos.x <= 1.0f) &&
@@ -173,5 +176,6 @@ public:
 
 private:
     KPADStatus kpad{};
+    WPADInfo wpadInfo{};
     KPADChan channel;
 };
