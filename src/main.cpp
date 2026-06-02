@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <dirent.h>
+#include <algorithm>
 #include <cstdint>
 #include <nn/act.h>
 
@@ -47,7 +48,6 @@ namespace Config {
     constexpr int SCROLL_INITIAL_DELAY = 500;
     constexpr int SCROLL_REPEAT_INTERVAL = 75;
 
-    constexpr int TILE_COUNT_MIDDLE = 13;
     constexpr int TILE_COUNT_BOTTOM = 8;
 
     constexpr int circle_diameter = 75;
@@ -83,15 +83,19 @@ struct UITextures {
     SDL_Texture* a_button = nullptr;
     SDL_Texture* plus_button = nullptr;
 
-    void destroyAll(SDL_Renderer* renderer) {
+    void destroyAll() {
         auto destroy = [](SDL_Texture*& tex) {
             if (tex) SDL_DestroyTexture(tex);
             tex = nullptr;
         };
-        destroy(circle); destroy(circle_selection); destroy(miiverse);
-        destroy(eshop); destroy(screenshots); destroy(browser);
-        destroy(controller); destroy(downloads); destroy(settings);
-        destroy(power); destroy(reference);
+        destroy(circle); destroy(circle_selection); destroy(circle_big);
+        destroy(circle_big_selection); destroy(battery_full);
+        destroy(battery_three_fourths); destroy(battery_half);
+        destroy(battery_needs_charge); destroy(battery_base);
+        destroy(all_titles); destroy(miiverse); destroy(eshop);
+        destroy(screenshots); destroy(browser); destroy(controller);
+        destroy(downloads); destroy(settings); destroy(power);
+        destroy(reference); destroy(a_button); destroy(plus_button);
     }
 };
 
@@ -125,6 +129,39 @@ SDL_Renderer *main_renderer;
 SDL_Event event;
 UITextures textures;
 TTFText* textRenderer = NULL;
+bool rpxloader_initialized = false;
+bool audio_initialized = false;
+bool account_initialized = false;
+
+int get_middle_tile_count() {
+    return std::max(1, static_cast<int>(apps.size()) + 1);
+}
+
+void clamp_middle_selection() {
+    if (cur_selected_row != ROW_MIDDLE) return;
+
+    cur_selected_tile = std::clamp(cur_selected_tile, 0, get_middle_tile_count() - 1);
+}
+
+SDL_Renderer* create_renderer_with_fallback(SDL_Window* window) {
+    const Uint32 renderer_flags[] = {
+        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC,
+        SDL_RENDERER_ACCELERATED,
+        SDL_RENDERER_SOFTWARE
+    };
+
+    for (Uint32 flags : renderer_flags) {
+        SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, flags);
+        if (renderer) {
+            printf("Created SDL renderer with flags: 0x%08x\n", static_cast<unsigned int>(flags));
+            return renderer;
+        }
+
+        printf("SDL_CreateRenderer failed for flags 0x%08x: %s\n", static_cast<unsigned int>(flags), SDL_GetError());
+    }
+
+    return nullptr;
+}
 
 SDL_Texture* load_texture(const char* path, SDL_Renderer* renderer) {
     SDL_RWops* rw = SDL_RWFromFile(path, "rb");
@@ -144,6 +181,8 @@ SDL_Texture* load_texture(const char* path, SDL_Renderer* renderer) {
 
     if (!texture) {
         printf("SDL_CreateTextureFromSurface failed: %s\n", SDL_GetError());
+    } else {
+        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
     }
 
     return texture;
@@ -152,6 +191,11 @@ SDL_Texture* load_texture(const char* path, SDL_Renderer* renderer) {
 void launch_system_title(uint64_t titleID) {
     MCPTitleListType titleInfo;
     int32_t handle = MCP_Open();
+    if (handle < 0) {
+        printf("Failed to open MCP for title launch.\n");
+        return;
+    }
+
     auto err       = MCP_GetTitleInfo(handle, titleID, &titleInfo);
     MCP_Close(handle);
 
@@ -171,6 +215,8 @@ int initialize() {
 
     if (RPXLoader_InitLibrary() != RPX_LOADER_RESULT_SUCCESS) {
         printf("RPX_LOADER failed with an error");
+    } else {
+        rpxloader_initialized = true;
     }
 
     // Handle window creation
@@ -196,15 +242,19 @@ int initialize() {
         printf("TTF_Init failed: %s\n", TTF_GetError());
     }
 
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+
     // Handle renderer creation
-    main_renderer = SDL_CreateRenderer(main_window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    main_renderer = create_renderer_with_fallback(main_window);
+    if (!main_renderer) {
+        printf("SDL_CreateRenderer failed with error: %s\n", SDL_GetError());
+        return EXIT_FAILURE;
+    }
 
     textRenderer = new TTFText(main_renderer);
     if (!textRenderer->loadFont(SD_CARD_PATH "switchU/fonts/font.ttf", 24, true)) {
         printf("Failed to load font!");
     }
-
-    SDL_SetHint( SDL_HINT_RENDER_SCALE_QUALITY, "1" );
 
     textures.circle = load_texture(SD_CARD_PATH "switchU/assets/ui_button.png", main_renderer);
     textures.circle_selection = load_texture(SD_CARD_PATH "switchU/assets/ui_button_selected.png", main_renderer);
@@ -231,28 +281,46 @@ int initialize() {
     textures.plus_button = load_texture(SD_CARD_PATH "switchU/assets/buttons/button_plus.png", main_renderer);
 
     get_user_information();
+    account_initialized = true;
 
     return EXIT_SUCCESS;
 }
 
 void shutdown() {
-    textures.destroyAll(main_renderer);
+    textures.destroyAll();
 
-    for (auto& app : apps) {
-        if (app.icon) SDL_DestroyTexture(app.icon);
-    }
-
+    unload_all_app_icons();
     apps.clear();
 
-    nn::act::Finalize();
+    if (textRenderer) {
+        delete textRenderer;
+        textRenderer = nullptr;
+    }
 
-    RPXLoader_DeInitLibrary();
+    if (account_initialized) {
+        nn::act::Finalize();
+        account_initialized = false;
+    }
 
-    AXQuit();
+    if (rpxloader_initialized) {
+        RPXLoader_DeInitLibrary();
+        rpxloader_initialized = false;
+    }
+
+    if (audio_initialized) {
+        AXQuit();
+        audio_initialized = false;
+    }
 
     TTF_Quit();
-    SDL_DestroyWindow(main_window);
-    SDL_DestroyRenderer(main_renderer);
+    if (main_renderer) {
+        SDL_DestroyRenderer(main_renderer);
+        main_renderer = nullptr;
+    }
+    if (main_window) {
+        SDL_DestroyWindow(main_window);
+        main_window = nullptr;
+    }
     SDL_Quit();
 }
 
@@ -274,7 +342,7 @@ void input(Input &input) {
     bool is_bottom_row = (cur_selected_row == ROW_BOTTOM);
 
     if (is_main_menu && (is_middle_row || is_bottom_row)) {
-        int tile_count = is_middle_row ? Config::TILE_COUNT_MIDDLE : Config::TILE_COUNT_BOTTOM;
+        int tile_count = is_middle_row ? get_middle_tile_count() : Config::TILE_COUNT_BOTTOM;
 
         if (pressed_left) {
             if (cur_selected_tile > 0) {
@@ -366,12 +434,16 @@ void input(Input &input) {
                 if (static_cast<size_t>(cur_selected_tile) < apps.size()) {
                     if (apps[cur_selected_tile].titleid == 0) {
                         const char* launch_path = get_selected_app_path();
-                        printf("Launching app with path: %s\n", launch_path);
+                        if (!launch_path) {
+                            printf("No launch path for selected homebrew app.\n");
+                            return;
+                        }
 
+                        printf("Launching app with path: %s\n", launch_path);
                         RPXLoaderStatus st = RPXLoader_LaunchHomebrew(launch_path);
                         printf("Launch status: %s\n", RPXLoader_GetStatusStr(st));
                     } else {
-                        printf("Launching system app with title ID: %llu\n", apps[cur_selected_tile].titleid);
+                        printf("Launching system app with title ID: %llu\n", static_cast<unsigned long long>(apps[cur_selected_tile].titleid));
                         launch_system_title(apps[cur_selected_tile].titleid);
                     }
                 } else {
@@ -419,14 +491,17 @@ void input(Input &input) {
     }
 
     // Developer note: make this an option toggle in the settings menu later
-    if (input.data.buttons_d & VPAD_BUTTON_MINUS) {
+    if (input.data.buttons_d & Input::BUTTON_MINUS) {
         load_homebrew_titles = !load_homebrew_titles;
         printf("Toggled homebrew title loading: %s\n", load_homebrew_titles ? "ON" : "OFF");
         scan_apps(main_renderer);
+        clamp_middle_selection();
     }
 
     if (cur_selected_row == ROW_TOP) {
         cur_selected_tile = 0;
+    } else if (cur_selected_row == ROW_MIDDLE) {
+        clamp_middle_selection();
     }
 
     // Only update camera if middle row is selected
@@ -445,12 +520,15 @@ void input(Input &input) {
 
         // Clamp camera within bounds
         if (target_camera_offset_x < 0) target_camera_offset_x = 0;
-        int max_camera_offset = seperation_space * 24 - Config::WINDOW_WIDTH;
+        int max_camera_offset = std::max(0, seperation_space * (get_middle_tile_count() - 1) + Config::spawn_box_size + 220 - Config::WINDOW_WIDTH);
         if (target_camera_offset_x > max_camera_offset) target_camera_offset_x = max_camera_offset;
     }
 }
 
 void update() {
+    static uint32_t icon_frame = 0;
+    icon_frame++;
+
     render_set_color(main_renderer, COLOR_BACKGROUND);
     SDL_RenderClear(main_renderer);
 
@@ -465,16 +543,30 @@ void update() {
 
     if (cur_menu == MENU_MAIN) {
         seperation_space = 270;
+        const int middle_tile_count = get_middle_tile_count();
+        const int all_software_index = middle_tile_count - 1;
 
-        for (int i = 0; i < Config::TILE_COUNT_MIDDLE; ++i) {
+        for (int i = 0; i < middle_tile_count; ++i) {
             int x = ((base_x + seperation_space * i) + 24) - camera_offset_x;
             int title_x = (((base_x + seperation_space * i) + 24) + (Config::spawn_box_size/2)) - camera_offset_x;
+            bool should_draw = (x + Config::spawn_box_size >= -Config::spawn_box_size) &&
+                               (x <= Config::WINDOW_WIDTH + Config::spawn_box_size);
+
+            if (!should_draw && i != cur_selected_tile) {
+                continue;
+            }
 
             SDL_Rect icon_rect = { x, base_y, Config::spawn_box_size, Config::spawn_box_size };
 
-            if (i < (Config::TILE_COUNT_MIDDLE - 1)) {
-                if (i < (int)apps.size() && apps[i].icon) {
-                    render_icon_with_background(main_renderer, apps[i].icon, x, base_y, Config::spawn_box_size);
+            if (i < all_software_index) {
+                if (i < (int)apps.size()) {
+                    SDL_Texture* icon = ensure_app_icon_loaded(apps[i], main_renderer, icon_frame);
+                    if (icon) {
+                        render_icon_with_background(main_renderer, icon, apps[i].icon_bg_color, x, base_y, Config::spawn_box_size);
+                    } else {
+                        render_set_color(main_renderer, COLOR_UI_BOX);
+                        SDL_RenderDrawRect(main_renderer, &icon_rect);
+                    }
                 } else {
                     render_set_color(main_renderer, COLOR_UI_BOX);
                     SDL_RenderDrawRect(main_renderer, &icon_rect);
@@ -503,7 +595,7 @@ void update() {
 
                 render_set_color(main_renderer, COLOR_CYAN);
 
-                if (i < (Config::TILE_COUNT_MIDDLE - 1)) {
+                if (i < all_software_index) {
                     for (int t = 0; t < outline_thickness; ++t) {
                         SDL_Rect thick_rect = {
                             outline_rect.x - t,
@@ -518,6 +610,8 @@ void update() {
                 }
             }
         }
+
+        trim_app_icon_cache(icon_frame, cur_selected_tile);
     } else if (cur_menu == MENU_USER) {
         seperation_space = 80;
 
@@ -561,20 +655,22 @@ void update() {
     int start_x = (Config::WINDOW_WIDTH - total_width) / 2;
 
     if (cur_menu == MENU_MAIN) {
+        SDL_Texture* bottom_icons[Config::TILE_COUNT_BOTTOM] = {
+            textures.miiverse,
+            textures.eshop,
+            textures.screenshots,
+            textures.browser,
+            textures.controller,
+            textures.downloads,
+            textures.settings,
+            textures.power
+        };
+
         for (int i = 0; i < Config::TILE_COUNT_BOTTOM; ++i) {
             int cx = start_x + i * (Config::circle_diameter + 32);
             int cy = bottom_y;
 
             SDL_Rect dst_rect = { cx, cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect miiverse_rect = { (start_x + 0 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect eshop_rect = { (start_x + 1 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect screenshots_rect = { (start_x + 2 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect browser_rect = { (start_x + 3 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect controller_rect = { (start_x + 4 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect downloads_rect = { (start_x + 5 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect settings_rect = { (start_x + 6 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect power_rect = { (start_x + 7 * 107), cy, Config::circle_diameter * 2, Config::circle_diameter * 2 };
-            SDL_Rect reference_rect = { 0, 0, 1280, 720 };
 
             SDL_RenderCopy(main_renderer, textures.circle, NULL, &dst_rect);
 
@@ -582,16 +678,7 @@ void update() {
                 SDL_RenderCopy(main_renderer, textures.circle_selection, NULL, &dst_rect);
             }
 
-            SDL_RenderCopy(main_renderer, textures.miiverse, NULL, &miiverse_rect);
-            SDL_RenderCopy(main_renderer, textures.eshop, NULL, &eshop_rect);
-            SDL_RenderCopy(main_renderer, textures.screenshots, NULL, &screenshots_rect);
-            SDL_RenderCopy(main_renderer, textures.browser, NULL, &browser_rect);
-            SDL_RenderCopy(main_renderer, textures.controller, NULL, &controller_rect);
-            SDL_RenderCopy(main_renderer, textures.downloads, NULL, &downloads_rect);
-            SDL_RenderCopy(main_renderer, textures.settings, NULL, &settings_rect);
-            SDL_RenderCopy(main_renderer, textures.power, NULL, &power_rect);
-            //SDL_RenderCopy(main_renderer, textures.reference, NULL, &reference_rect);
-            // Uncomment this to view a reference for positions and stuff of that sort ^
+            SDL_RenderCopy(main_renderer, bottom_icons[i], NULL, &dst_rect);
         }
     }
 
@@ -698,17 +785,20 @@ void update() {
 }
 
 int main(int argc, char const *argv[]) {
+    (void)argc;
+    (void)argv;
+
     if (initialize() != EXIT_SUCCESS) {
         shutdown();
+        return EXIT_FAILURE;
     }
 
     scan_apps(main_renderer);
 
     WHBProcInit();
 
-    RPXLoader_InitLibrary();
-
     AXInit();
+    audio_initialized = true;
 
     KPADInit();
     WPADEnableURCC(TRUE);
@@ -732,7 +822,16 @@ int main(int argc, char const *argv[]) {
             }
         }
         baseInput.process();
+        // Read battery from VPAD, fallback to WPAD if invalid (Cemu compatibility)
         battery_level = vpadInput.data.battery;
+        if (battery_level > 6) {
+            for (auto &wpadInput : wpadInputs) {
+                if (wpadInput.data.battery <= 6) {
+                    battery_level = wpadInput.data.battery;
+                    break;
+                }
+            }
+        }
 
         input(baseInput);
 
@@ -744,3 +843,5 @@ int main(int argc, char const *argv[]) {
     WHBProcShutdown();
     return EXIT_SUCCESS;
 }
+
+

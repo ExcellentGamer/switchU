@@ -2,17 +2,18 @@
 #include <iostream>
 
 TTFText::TTFText(SDL_Renderer* renderer) : renderer(renderer), font(nullptr) {
-    if (TTF_Init() == -1) {
-        std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
-    }
 }
 
 TTFText::~TTFText() {
     if (font) TTF_CloseFont(font);
-    TTF_Quit();
 }
 
 bool TTFText::loadFont(const std::string& path, int size, bool bold) {
+    if (!TTF_WasInit() && TTF_Init() == -1) {
+        std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
+        return false;
+    }
+
     font = TTF_OpenFont(path.c_str(), size);
     if (!font) {
         std::cerr << "Failed to load font: " << TTF_GetError() << std::endl;
