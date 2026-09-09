@@ -37,6 +37,19 @@ Simply run `make` at the root of the repo
 make (path to Makefile)
 ```
 
+## Building using the Dockerfile
+You can also build SwitchU using Docker:
+
+```bash
+# Build docker image (only needed once)
+docker build . -t switchu_builder
+
+# make 
+docker run -it --rm -v ${PWD}:/project switchu_builder make
+
+# make clean
+docker run -it --rm -v ${PWD}:/project switchu_builder make clean
+
 # Credits
 - [BenchatonDev](https://github.com/BenchatonDev) Co-writer on the projects code.
 - [Ashquarky](https://github.com/ashquarky) For porting SDL2 to Wii U
